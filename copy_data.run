@@ -1,0 +1,142 @@
+#!/bin/bash
+
+# Cd into our working directory in case we're not into it already
+cd "$(dirname "$0")";
+
+echo "----------------------------------------------------------------------------------------------"
+echo "ewam: Starting processing of ewam model data - `date`"
+echo "----------------------------------------------------------------------------------------------"
+
+# Folder to be used to download and process data
+export MODEL_DATA_FOLDER="/tmp/ewam/"
+export HOME_FOLDER=$(pwd)
+export N_CONCUR_PROCESSES=12 # not used anymore as it needs to be tuned per case
+export NCFTP_BOOKMARK="altervista"
+DATA_DOWNLOAD=true
+DATA_PLOTTING=true
+DATA_UPLOAD=true
+
+##### LOAD functions to download model data
+. ./functions_download_dwd.sh
+export SHELL=$(type -p bash)
+# We need to open many files at the same time
+ulimit -Sn 8192
+# 
+###########################################
+
+# Retrieve run ##########################
+
+export year=`date +"%Y"`
+export month=`date +"%m"`
+export day=`date +"%d"`
+export hour=`date +"%H"`
+export hour_no_zero=`date -u +"%-H"`
+
+if [ "$hour_no_zero" -ge 6 ] && [ "$hour_no_zero" -lt 16 ] 
+then 
+ run="00"
+elif [ "$hour_no_zero" -ge 16 ] && [ "$hour_no_zero" -lt 23 ] 
+then
+ run="12"
+fi
+
+export run
+
+#############################################
+
+
+mkdir -p ${MODEL_DATA_FOLDER}it
+mkdir -p ${MODEL_DATA_FOLDER}moc
+mkdir -p ${MODEL_DATA_FOLDER}lig
+mkdir -p ${MODEL_DATA_FOLDER}tir
+mkdir -p ${MODEL_DATA_FOLDER}adr
+mkdir -p ${MODEL_DATA_FOLDER}jon
+mkdir -p ${MODEL_DATA_FOLDER}mor
+
+# Move to the data folder to do processing
+cd ${MODEL_DATA_FOLDER} || { echo 'Cannot change to DATA folder' ; exit 1; }
+
+# SECTION 1 - DATA DOWNLOAD ############################################################
+
+if [ "$DATA_DOWNLOAD" = true ]; then
+	echo "----------------------------------------------------------------------------------------------"
+	echo "ewam: Starting downloading of data - `date`"
+	echo "----------------------------------------------------------------------------------------------"
+	# Remove older files
+	rm ${MODEL_DATA_FOLDER}*.nc
+	rm ${MODEL_DATA_FOLDER}*.grib2
+
+
+	#2-D variables
+	variables=("SWH" "TM10" "MWD")
+	parallel -j 5 --delay 1 download_merge_2d_variable_ewam ::: "${variables[@]}"
+
+fi 
+
+############################################################
+
+
+# SECTION 2 - DATA PLOTTING ############################################################
+
+if [ "$DATA_PLOTTING" = true ]; then
+	echo "----------------------------------------------------------------------------------------------"
+	echo "ewam: Starting plotting of data - `date`"
+	echo "----------------------------------------------------------------------------------------------"
+	python --version
+	cp ${HOME_FOLDER}/plotting/*.py ${MODEL_DATA_FOLDER}
+
+	export QT_QPA_PLATFORM=offscreen # Needed to avoid errors when using Python without display
+
+	scripts=("plot_wave_height.py" "plot_wave_period.py")
+
+	projections=("euratl" "it" "moc" "tir" "adr" "jon" "mor")
+
+	parallel -j 8 python ::: "${scripts[@]}" ::: "${projections[@]}"
+	rm ${MODEL_DATA_FOLDER}*.py
+fi
+
+###########################################################
+
+
+# SECTION 3 - IMAGES UPLOAD ############################################################
+# Use ncftpbookmarks to add a new FTP server with credentials
+if [ "$DATA_UPLOAD" = true ]; then
+	echo "----------------------------------------------------------------------------------------------"
+	echo "ewam: Starting FTP uploading - `date`"
+	echo "----------------------------------------------------------------------------------------------"
+
+	#
+	# Then upload the other pictures
+	#
+	images_output=("wave_period" "wave_height")
+
+	# suffix for naming
+	projections_output=("" "it/" "moc/" "tir/" "adr/" "jon/" "mor/")
+	# remote folder on server
+	projections_output_folder=("ewam" "ewam/it" "ewam/moc" "ewam/tir" "ewam/adr" "ewam/jon" "ewam/mor")
+
+	# Create a lisf of all the images to upload 
+	upload_elements=()
+	for i in "${!projections_output[@]}"; do
+		for j in "${images_output[@]}"; do
+				upload_elements+=("${projections_output_folder[$i]}/${j} ./${projections_output[$i]}${j}_*")
+		done
+	done
+
+
+	for k in "${upload_elements[@]}"; do
+		ncftpput -R -v -DD -m ${NCFTP_BOOKMARK} ${k}
+	done
+fi 
+
+############################################################
+
+# SECTION 4 - CLEANING ############################################################
+
+echo "----------------------------------------------------------------------------------------------"
+echo "ewam: Finished cleaning up - `date`"
+echo "----------------------------------------------------------------------------------------------"
+
+############################################################
+
+cd -
